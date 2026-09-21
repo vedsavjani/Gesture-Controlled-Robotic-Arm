@@ -1,2 +1,2 @@
-# Gesture-Controller-Robotic-Arm
-Gesture-Controller Robotic Arm
+# Gesture-Controlled-Robotic-Arm
+Gesture-Controlled Robotic Arm
