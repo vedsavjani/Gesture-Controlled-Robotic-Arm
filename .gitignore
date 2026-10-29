@@ -1,5 +1,14 @@
+# Python environments and caches
+.venv/
+venv/
+venv-*/
+__pycache__/
 
-.venv/
-.venv/
+# Model files - Google's, downloaded per README (not committed)
+models/
+*.task
+*.tflite
+
+# Large / throwaway local files
 proof.mp4
 snapshot_*.jpg

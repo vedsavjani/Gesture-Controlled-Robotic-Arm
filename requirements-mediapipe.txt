@@ -1,0 +1,4 @@
+# ONLY for experiments/hand_test.py (the MediaPipe baseline). Python 3.12.
+# Use a SEPARATE venv from requirements.txt - mediapipe 0.10.x needs numpy 1.x, the tracker uses numpy 2.x.
+# Do NOT use mediapipe 1.x on the UNO Q: it crashes with "Illegal instruction" (see README, pitfalls).
+mediapipe==0.10.18
