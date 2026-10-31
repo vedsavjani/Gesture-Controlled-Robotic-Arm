@@ -11,8 +11,8 @@ import config
 
 
 class Camera:
-    def __init__(self, url=config.CAMERA_URL):
-        self.url = url
+    def __init__(self, url=None):
+        self.url = url or config.camera_url()
         self._frame = None
         self._stamp = 0.0      # time the newest frame arrived
         self._count = 0        # frames received

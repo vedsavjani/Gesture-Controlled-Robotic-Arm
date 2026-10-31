@@ -104,13 +104,26 @@ The 21 landmarks: 0 = wrist; thumb 1–4; index 5–8; middle 9–12; ring 13–
 
 Both of us benchmarked independently and got the same numbers. Details: `notes/benchmarks.md`. Correctness proof: `docs/track_test/track_out.jpg` (the 21-point skeleton lands on the real joints).
 
+### Verified on the board (Oct 31, merged code, fresh setup from this README)
+
+| Check | Result |
+|---|---|
+| `check_camera.py` | ~30 FPS, 640×480, ~1 ms wait on the board; phone found automatically; recovered after the IP Webcam server was stopped and restarted (twice); clean exit |
+| `check_hand.py` | `HAND` for open / tilted / far photos (presence 0.88–1.00), `no hand` for the empty photo; points on the real joints. Search path ~110–136 ms, tracking path ~48 ms |
+| `main.py` | ~18 FPS while tracking (hand in 19/19 frames); 8–9 FPS searching when the hand leaves; finds the hand again within ~1 s |
+
+**Known limits (from that run):**
+- **Palm should face the camera.** With the hand edge-on (palm sideways, fingers stacked), the hand is still found but finger positions are partly guessed. Design gestures that keep the palm roughly toward the camera.
+- **Points can be outside the frame** (e.g. y = −35) when a fingertip goes past the image edge: the model estimates where it would be. Clamp before mapping to angles.
+- **Tracking drops at frame edges and on fast moves**, then recovers within ~1 s. The mapping should hold the last angles briefly instead of jumping.
+
 ---
 
 ## 3. Files
 
 | File | Job |
 |---|---|
-| `config.py` | All settings in one place: camera URL, model folder, thread count. The URL can be overridden with the `CAMERA_URL` environment variable, no code edit needed |
+| `config.py` | All settings in one place: model folder, thread count, and the camera URL, which is **found automatically** (the phone = the hotspot gateway) or set with the `CAMERA_URL` environment variable |
 | `camera.py` | Reads the phone stream in a background thread. Gives out only **new** frames plus their age. Reconnects if the stream drops (5 s open / 3 s read timeouts). Stops cleanly |
 | `hand.py` | The tracker: `HandTracker().process(frame)` → `(21×3 points, presence)` or `None` |
 | `main.py` | Live loop: camera → tracker → prints FPS, how many frames had a hand, and the index fingertip. Ctrl+C to stop |
@@ -258,12 +271,18 @@ cd ~/gesture-arm
 source .venv/bin/activate
 ```
 
-### 5.7 Set the camera address
+### 5.7 Camera address (automatic)
 
-Either edit `CAMERA_URL` in `config.py`, or set it for the current shell without touching the code:
+**Nothing to set on the phone hotspot.** The code finds the phone itself: on the hotspot, the phone is the board's default gateway, so `config.py` reads it from Linux's routing table (`/proc/net/route`, the same info as `ip route`) and uses `http://<gateway>:8080/video`. Each run prints which URL it picked, e.g. `Camera: http://10.138.189.35:8080/video (auto: phone = hotspot gateway)`.
+
+This is what lets the demo start with no laptop: the phone's IP can change and nobody needs to type it.
+
+**Override** (a different network, a laptop not on the hotspot, Windows/Mac where `/proc` doesn't exist):
 ```bash
 export CAMERA_URL=http://<PHONE_IP>:8080/video
 ```
+If neither works, the program stops with a clear message instead of silently retrying a wrong address.
+
 `/video` is the continuous stream; `/shot.jpg` is a single photo.
 
 ---
@@ -339,7 +358,7 @@ source .venv/bin/activate
 uv pip install -r requirements.txt
 python -c "import cv2, numpy, ai_edge_litert; print('ok')"
 ```
-Then download the models as in section 5.5 (use `curl -L -o ...` instead of `wget` if you don't have wget), connect the laptop to the phone hotspot, set `CAMERA_URL`, and run the same checks.
+Then download the models as in section 5.5 (use `curl -L -o ...` instead of `wget` if you don't have wget), connect the laptop to the phone hotspot, and run the same checks (on Linux the camera URL is found automatically; on Windows/Mac set `CAMERA_URL`).
 
 Laptop FPS will be much higher than the board's. **Always confirm final numbers on the UNO Q.**
 
@@ -404,7 +423,8 @@ The original experiment scripts (MediaPipe baseline, model inspection, single-ph
 |---|---|
 | `Connection refused` | IP Webcam server is off. Tap **Start server**; check the battery setting (5.2) |
 | `curl` times out | Wrong IP, or the board isn't on the hotspot. Check `ip route`, use the hotspot |
-| Phone IP changed | Run `ip route \| grep default` again; update `CAMERA_URL` |
+| Phone IP changed | Nothing to do on the hotspot (found automatically). If you set `CAMERA_URL` by hand, update or `unset CAMERA_URL` |
+| Connects to the wrong IP / times out | Check the `Camera: ...` line it prints. A leftover `CAMERA_URL` overrides auto-detection: `unset CAMERA_URL` |
 | Frame is 1920×1080 | Resolution wasn't saved. Set 640×480, then stop and start the server |
 | `0.0 FPS` for a few seconds | Stream dropped; `camera.py` retries every second. If it never recovers, restart the server |
 | adb `no permissions` | Missing udev rule (5.3); replug; `adb kill-server` |
@@ -420,6 +440,8 @@ The original experiment scripts (MediaPipe baseline, model inspection, single-ph
 | No hand found, but a hand is in view | Better light, plain background, whole hand in view, palm toward the camera |
 | Points in the wrong place | Check `*_crop.jpg`; don't trust the score alone |
 | Hand found then lost repeatedly | Move slower, keep the whole hand in frame, avoid a second hand in view |
+| Finger points look wrong but a hand is found | Hand is probably edge-on; turn the palm toward the camera |
+| Coordinates negative or bigger than 640×480 | Fingertip is outside the frame; the model extrapolates. Clamp them |
 | `adb: command not found` on the board | `adb` runs on the laptop |
 
 ---
@@ -460,4 +482,4 @@ The original experiment scripts (MediaPipe baseline, model inspection, single-ph
 | Oct 28 | Ved Savjani | Phone as camera: IP Webcam → Wi-Fi → OpenCV, 31 FPS on laptop |
 | Oct 29 | Ved Savjani | UNO Q bring-up (adb, udev rule, hotspot, Python env), stream 30 FPS on the board; diagnosed MediaPipe 1.2.0 crash (LSE) and 0.10.18 single-core bottleneck (5.8 FPS); 4-thread TFLite benchmark (3×); first custom tracker (palm decoding, rotated crop, tracking), verified with images, ~18 FPS |
 | Oct 30 | Krtin Singhvi | Re-benchmarked independently; refactored the tracker into `hand.py` (`HandTracker`); `camera.py` with reconnect, timeouts, clean shutdown, frame age; `config.py`, `main.py`, check scripts; verified Python 3.13 with a single venv; setup guide via App Lab |
-| Oct 31 | Ved Savjani | Merged both into `main`, trimmed to what's required, README |
+| Oct 31 | Ved Savjani | Merged both into `main`, trimmed to what's required; camera URL auto-detection (no hard-coded IP); verified the merged code on the board from a fresh setup; detailed README |
