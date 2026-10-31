@@ -1,253 +1,197 @@
-# Gesture Arm: hand-tracking prototype
+# Gesture-Controlled Robotic Arm
 
-ECE 211P Electronics Lab project. A 4-DOF robotic arm that copies your hand.
+ECE 211P Electronics Lab project, IIIT Bangalore. A 4-DOF robotic arm that copies your hand. A phone camera streams video to the **Arduino UNO Q**, the board tracks your hand, and the servos follow. No laptop at demo time.
 
-This repo holds **prototype 1**: a phone camera sends video to the Arduino UNO Q, and the board finds 21 points on your hand in real time. No laptop is needed while it runs.
+**Status (Oct 31):** hand tracking works on the UNO Q: 21 hand points at **~18 FPS** while a hand is in view. Not built yet: hand → servo angles, smoothing, the Bridge link to the STM32, the servo sketch.
 
-Not built yet: hand-to-angle mapping, smoothing, and the Bridge link to the STM32 servo sketch.
+---
 
-## What works (measured on the UNO Q)
+## Start here
+
+**Done:** phone → board stream, and a hand tracker on the board (`hand.py`). Build on it; don't redo it. Section 6 explains why it's built this way.
+
+**Open tasks:**
+1. **`mapping.py`:** 21 points → 4 servo angles + gripper. Calibration, dead zone, One Euro filter, two thresholds for the gripper. Can be built on a laptop.
+2. **STM32 servo sketch:** move each SG90 gradually toward its target, speed limit, safe pose if data stops.
+3. **Bridge link:** send angles from Python to the sketch, at most ~20 updates/s.
+
+---
+
+## 1. How it works
+
+The UNO Q is two computers on one board:
+
+| | Linux side | Microcontroller side |
+|---|---|---|
+| Chip | Qualcomm QRB2210, 4× Cortex-A53 @ 2.0 GHz | STM32U585 |
+| Job | Video + hand tracking (Python) | Servo PWM (Arduino sketch) |
+
+```
+Phone (IP Webcam) ──Wi-Fi hotspot──▶ camera.py   newest frame only, reconnects
+                                       hand.py    palm detector → rotated crop → landmark model
+                                                  → 21 points (x, y, z)
+                                       mapping.py → angles          (next)
+                                            │ Bridge                (next)
+                                            ▼
+                                       STM32 → PWM → servos         (next)
+```
+
+**The tracker** (`hand.py`) runs Google's two hand networks on TFLite with 4 threads:
+- **Palm detector**: whole frame (letterboxed to 192×192) → best of 2,016 anchor boxes → palm box + 7 keypoints. Runs only when no hand is tracked.
+- **Landmark model**: a 224×224 crop around the hand, rotated upright → 21 points + presence score.
+- **Tracking**: each next crop is built from the last 21 points, so the palm detector is skipped until the hand is lost (presence < 0.5).
+
+## 2. Results (measured on the UNO Q)
 
 | Item | Result |
 |---|---|
-| Phone stream at 640×480 | 33–37 FPS, about 1 ms wait on the board |
-| Palm detector, 4 threads | about 62 ms |
-| Landmark model, 4 threads | about 45 ms |
-| Tracking one hand | about 48 ms per frame after the first frame |
+| Phone stream at 640×480 | ~30 FPS, ~1 ms wait on the board |
+| Palm detector, 4 threads | ~62–65 ms |
+| Landmark model, 4 threads | ~45 ms |
+| **Tracking one hand** | **~18 FPS** (~50 ms/frame) |
+| Searching (no hand) | 8–13 FPS |
+| MediaPipe 0.10.18, for comparison | ~6 FPS |
 
-See `notes/benchmarks.md` for the speed tests.
+Speed tests: `notes/benchmarks.md`. Proof the points are correct: `docs/track_test/track_out.jpg`.
 
-## Why not MediaPipe? [NOTE: Not really important]
-
-We tested it on the board.
-
-- MediaPipe 1.2.0 crashes ("compiled with lse enabled"). The board's CPU lacks the ARMv8.1 LSE instructions. Python 3.12 and 3.13 fail the same way.
-- MediaPipe 0.10.18 works, but only at about 6 FPS.
-- We run Google's two hand models directly with `ai-edge-litert` on 4 threads. This is about 3× faster per model.
-
-## Files
+## 3. Files
 
 | File | Job |
 |---|---|
 | `config.py` | Settings: camera URL, model folder, thread count |
-| `camera.py` | Reads the phone stream. Keeps only the newest frame. Reconnects. Stops cleanly |
-| `hand.py` | The tracker. Frame in, 21 points out (or nothing) |
-| `main.py` | Live loop: camera, tracker, print FPS and fingertip |
-| `check_camera.py` | 30-second camera test [NOTE: Not relevant to the main code; just a check] |
-| `check_hand.py` | Photo test. Saves pictures with the points drawn [NOTE: Same thing] |
-| `requirements.txt` | Three pinned packages |
+| `camera.py` | Reads the phone stream. Newest frame only, reconnects, stops cleanly |
+| `hand.py` | The tracker: frame in → 21 points out (or nothing) |
+| `main.py` | Live loop: prints FPS and the index fingertip |
+| `check_camera.py` | 30 s camera test (FPS, reconnect) |
+| `check_hand.py` | Photo test: saves pictures with the points drawn |
+| `experiments/bench_tflite.py` | Benchmark: each network with 1/2/4 threads |
 | `notes/benchmarks.md` | Speed test results |
+| `docs/` | Proof images (section 6) |
 
-`models/` and `probes/` are in `.gitignore`. A new clone does not have them. Make them as shown below.
+`models/` and `probes/` are git-ignored; make them as below.
 
-```text
-main.py ──▶ camera.py ──▶ config.py
-   └─────▶ hand.py ─────▶ config.py
-```
+---
 
-## You need [NOTE: Just use mobile data, turn on hotspot, and connect App Lab to the same network]
+## 4. Setup
 
-- Arduino UNO Q (4 GB). A shell on it: App Lab terminal.
-- An Android phone with the **IP Webcam** app.
-- A network both can join. The **phone hotspot** is best. Campus Wi-Fi often blocks device-to-device traffic.
-- Internet on the board for setup only (about 1 GB of downloads).
+### 4.1 Phone (IP Webcam, Android)
+1. Video preferences → **Video resolution 640×480**. Bigger images slow the board.
+2. Phone Settings → Apps → IP Webcam → **Battery saver: No restrictions**, **Autostart on**. Otherwise the phone kills it when locked.
+3. Turn on the **phone hotspot**, then **Start server**. After changing video settings, stop and start the server.
 
-## Installing Arduino App Lab
-
-If you are installing App Lab on Linux, please see the [official Linux setup guide](https://docs.arduino.cc/software/app-lab/setup/linux/).
-
-If you are using Windows, ask Claude to translate the instructions below. App Lab installation should be easy, but everything else is hard.
-
-## 1. Phone setup (IP Webcam)
-
-1. Install **IP Webcam**.
-2. Open **Video preferences**. Set **Video resolution** to **640×480**. A bigger image slows the board.
-3. Turn on the **phone hotspot**.
-4. In IP Webcam, tap **Start server**. The app shows an address, such as `http://192.168.x.x:8080`. [NOTE: In reality, it will be different because it is not a local IP. It would look something like `10.11.19.xx`.]
-5. After any change to video settings, tap **Stop server**, then **Start server**.
-
-## 2. Board setup
-
-Run these on the **board shell**.
-
-### 2.1 Join the network and check it [NOTE: This will probably already be working. Run these commands just in case. They only check that your board is actually connected to the hotspot. If App Lab shows that it is connected, skip this section.]
-
+### 4.2 A shell on the board
+Easiest: the terminal in **Arduino App Lab** (bottom right). Or over USB from Ubuntu:
 ```bash
-nmcli -t -f ACTIVE,SSID dev wifi | grep '^yes'     # which Wi-Fi is the board on?
-ip route | grep default                            # on the phone hotspot, the "via" address is the phone
-ping -c 2 8.8.8.8                                  # internet works?
+sudo apt install adb
+echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2341", ATTR{idProduct}=="0078", MODE="0660", GROUP="plugdev"' | sudo tee /etc/udev/rules.d/51-arduino-unoq.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+# replug the board, then:
+adb kill-server
+adb shell
 ```
+Board user: `arduino`. Password: on the team WhatsApp (never commit it). On a new board, the first `sudo` makes you set one.
 
-If the board is not on your hotspot:
-
+### 4.3 Network (on the board)
+The board must be on the phone hotspot. Campus Wi-Fi blocks device-to-device traffic.
 ```bash
-sudo nmcli dev wifi connect "<HOTSPOT_NAME>" password "<HOTSPOT_PASSWORD>"
+nmcli -t -f ACTIVE,SSID dev wifi | grep '^yes'     # which Wi-Fi?
+sudo nmcli dev wifi connect "<HOTSPOT>" password "<PASSWORD>"   # if not on the hotspot
+ip route | grep default                            # "via X.X.X.X" = the phone's IP
+curl -I http://<PHONE_IP>:8080/shot.jpg            # expect 200 OK
 ```
+Use the `via` address. IP Webcam may show a `100.x.x.x` mobile-data address instead; that one changes on reconnect.
 
-If you see `key-mgmt: property is missing`, run `nmcli connection show` and join the network from App Lab instead. The first `sudo` on a new board asks you to set a password.
-
-Find the phone address. On the phone hotspot, it is the `via` address above. On other networks, read it in the IP Webcam app. Test it:
-
+### 4.4 Code, models, environment (on the board)
 ```bash
-curl -I http://<PHONE_IP>:8080/shot.jpg            # expect "200 OK"
-```
-
-"Connection refused" means the server is off. Tap **Start server**.
-
-### 2.2 Install uv [NOTE: Run this on the board's shell. You can start it at the bottom right in App Lab. Skip this if you already have the board I used, because it is already installed.]
-
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+curl -LsSf https://astral.sh/uv/install.sh | sh     # skip if uv exists
 source $HOME/.local/bin/env
-uv --version
-```
 
-In a new shell, run `source $HOME/.local/bin/env` again.
-
-### 2.3 Get the code [NOTE: Same thing as above.]
-
-```bash
-git clone https://github.com/krtin-singhvi/gesture-arm.git ~/gesture-arm
+git clone https://github.com/vedsavjani/Gesture-Controlled-Robotic-Arm.git ~/gesture-arm
 cd ~/gesture-arm
 mkdir -p models probes
-```
-
-### 2.4 Download the models [NOTE: Same thing again.]
-
-```bash
 wget -O models/hand_landmarker.task https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
 python3 -m zipfile -e models/hand_landmarker.task models/
-ls models
-```
 
-You must see three files:
-
-```text
-hand_detector.tflite
-hand_landmarker.task
-hand_landmarks_detector.tflite
-```
-
-(`.task` is a zip file. We only use the two `.tflite` files inside.)
-
-### 2.5 Make the Python environment [NOTE: Same thing again, v3.]
-
-```bash
 uv venv --python 3.13 .venv
 source .venv/bin/activate
 uv pip install -r requirements.txt
-python -c "import cv2, numpy, ai_edge_litert; print('ok')"
 ```
+`ls models` must show `hand_detector.tflite` and `hand_landmarks_detector.tflite`. The board's own Python 3.13 is enough; don't install MediaPipe.
 
-The board's own Python 3.13 is enough. Do not install MediaPipe.
+**Every new shell:** `cd ~/gesture-arm && source .venv/bin/activate`
 
-In every new shell, run the following. [NOTE: Please do this to avoid corrupting global Python packages. This is on the board btw.]
+### 4.5 Camera address
+Edit `CAMERA_URL` in `config.py`, or per run: `export CAMERA_URL=http://<PHONE_IP>:8080/video`
 
-```bash
-cd ~/gesture-arm
-source .venv/bin/activate
-```
+---
 
-### 2.6 Set the camera address
-
-Open `config.py` and set `CAMERA_URL`, or set it for one run:
-
-```bash
-export CAMERA_URL=http://<PHONE_IP>:8080/video
-```
-
-## 3. Run the tests
-
-All from `~/gesture-arm` with the environment active.
-
-### 3.1 Camera test (30 s)
+## 5. Run
 
 ```bash
 python check_camera.py
 ```
-
-Pass: about 30 FPS and shape `(480, 640, 3)`. During the test, stop and start the phone server once. FPS should drop to 0 and come back within about 5 seconds. It must end with `done`.
-
-### 3.2 Photo test
-
-Take four photos, one pose each. Run each `curl` right after you set the pose.
+Pass: ~30 FPS, shape `(480, 640, 3)`. Stop/start the phone server once mid-test: FPS drops to 0 and recovers within ~5 s. Ends with `done`.
 
 ```bash
-curl -o probes/open.jpg http://<PHONE_IP>:8080/shot.jpg     # open hand, palm to camera
-curl -o probes/tilt.jpg http://<PHONE_IP>:8080/shot.jpg     # hand tilted about 45°
-curl -o probes/far.jpg  http://<PHONE_IP>:8080/shot.jpg     # hand far away
-curl -o probes/none.jpg http://<PHONE_IP>:8080/shot.jpg     # no hand
+curl -o probes/open.jpg http://<PHONE_IP>:8080/shot.jpg   # open palm
+curl -o probes/tilt.jpg http://<PHONE_IP>:8080/shot.jpg   # tilted ~45°
+curl -o probes/far.jpg  http://<PHONE_IP>:8080/shot.jpg   # far away
+curl -o probes/none.jpg http://<PHONE_IP>:8080/shot.jpg   # no hand
 python check_hand.py probes/open.jpg probes/tilt.jpg probes/far.jpg probes/none.jpg
 ```
-
-Pass: `HAND` for the first three, `no hand` for the last. Then look at the pictures.
-
-```bash
-hostname -I                                          # the board address
-python -m http.server 8000 --directory probes        # Ctrl+C to stop
-```
-
-On a device on the same network, open `http://<BOARD_IP>:8000`. Open `open_out.jpg` and `tilt_out.jpg`. The red points must sit on the real finger joints. `*_crop.jpg` shows what the model saw. The hand must be upright and fully inside it.
-
-[NOTE: The board IP will be the same as the phone IP, or at least it was in my case.]
-
-### 3.3 Live run
+Pass: `HAND` ×3, `no hand` ×1. Then **look at the images**: the points must sit on the real joints (`*_out.jpg`), and the hand must be upright and fully inside `*_crop.jpg`. View them with `adb pull`, or serve them: `python -m http.server 8000 --directory probes` and open `http://<BOARD_IP>:8000` (`hostname -I` gives the board's own IP, which differs from the phone's).
 
 ```bash
-python main.py
+python main.py        # Ctrl+C to stop
 ```
+Pass: ≥15 FPS with a hand in view; recovers after you pull your hand out and back.
 
-It prints one line per second. Hold your hand in view, move it, then pull it out. Stop with `Ctrl+C`.
+**Laptop (no board):** same steps from 4.4 without uv's install line (install uv per its site), Python 3.12 or 3.13. Tested on Linux; on Windows use WSL. Laptop FPS is higher; confirm numbers on the board.
 
-```text
-18.2 FPS | hand in 18/18 frames | index tip 312,201
-```
+---
 
-Expected: 15 FPS or more while the hand is in view.
+## 6. Why it's built this way
 
-## Laptop setup (optional)
+1. **Not MediaPipe.** MediaPipe 1.2.0 crashes on the board (`Illegal instruction`: built for ARMv8.1 LSE instructions; the Cortex-A53 is ARMv8.0). 0.10.18 runs but at ~6 FPS: `top` showed ~120% CPU, i.e. it used about one of the four cores.
+2. **TFLite with 4 threads.** The same two networks on `ai-edge-litert` with `num_threads=4` run ~3× faster each (`experiments/bench_tflite.py`). We wrote the parts MediaPipe did for us (anchor decoding, rotated crop, tracking) → ~18 FPS.
+3. **Palm detector input must be scaled 0..1.** With −1..1 the model returns score 1.00 with boxes far outside the image, even with no hand. Compare `docs/palm_test/hand1_out_01.jpg` (correct) with `hand1_out_11.jpg` (wrong). A high score doesn't prove correctness; check the picture.
+4. **Phone as camera** over the hotspot: no camera hardware or USB hub needed; the stream is ~30 FPS, so the network is not the bottleneck.
 
-Use it to work on code that does not need the board. Use Python 3.12 or 3.13.
+The original experiment scripts (MediaPipe baseline, model inspection, single-photo palm test, the first tracker) are in commit `af3f9e0`.
 
-```bash
-git clone https://github.com/krtin-singhvi/gesture-arm.git
-cd gesture-arm
-mkdir -p models probes
-uv venv --python 3.13 .venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
-```
+## 7. Troubleshooting
 
-Then download the models as in 2.4. Tested on Linux only. If it fails on Windows, use WSL. FPS on a laptop is higher. Confirm final numbers on the board.
-
-## Troubleshooting
-
-| Problem | Cause and fix |
+| Problem | Fix |
 |---|---|
-| `Connection refused` | Phone server is off. Tap **Start server**. Check the battery setting in step 1 |
-| `curl` times out | Wrong IP, or the network blocks device-to-device traffic. Use the phone hotspot |
-| Phone IP changed | Run `ip route \| grep default` again. Update `CAMERA_URL` |
-| Frame is 1920×1080 | Video resolution was not saved. Set 640×480, then stop and start the server |
-| `0.0 FPS` for a while | Stream dropped. The camera retries every second |
-| `ModuleNotFoundError` | The environment is not active. Run `source .venv/bin/activate` |
-| `Illegal instruction` | You installed MediaPipe 1.x. Do not use it on this board |
-| Cannot find `hand_detector.tflite` | Do step 2.4 again. Check `ls models` |
-| `probes/hand.jpg` is 0 bytes | The `curl` failed. Check the phone address |
-| `command not found: uv` | Run `source $HOME/.local/bin/env` |
-| No hand found, but a hand is in view | Better light, plain background, hand fully in view, palm toward the camera |
-| Points are in the wrong place | Check `*_crop.jpg`. Do not trust the score alone |
+| `Connection refused` | IP Webcam server stopped. Start it; check the battery setting |
+| `curl` times out | Wrong IP or not on the hotspot (campus Wi-Fi blocks devices) |
+| Phone IP changed | `ip route \| grep default` again; update `CAMERA_URL` |
+| Frame is 1920×1080 | Set 640×480, then stop and start the server |
+| adb `no permissions` | Add the udev rule (4.2), replug, `adb kill-server` |
+| `command not found: uv` | `source $HOME/.local/bin/env` |
+| `ModuleNotFoundError` | Venv not active: `source .venv/bin/activate` |
+| `Illegal instruction` | MediaPipe 1.x installed. Don't use it on this board |
+| `hand_detector.tflite` not found | Redo the model step; check `ls models` |
+| 0-byte photo in `probes/` | `curl` failed; check the phone IP |
+| No hand found | Better light, plain background, whole hand in view, palm to camera |
+| adb session drops | Laptop slept or low battery (the board is USB-powered from it) |
+| `adb` not found on the board | `adb push/pull` run on the laptop, not in the board shell |
 
-## Rules for the code [NOTE: Not important.]
+## 8. Rules for the code
 
-- Use `opencv-python-headless`. The board has no screen, so never use `cv2.imshow`. Save images instead.
-- The palm detector input must be scaled 0 to 1. The scale −1 to 1 gives confident wrong answers.
-- Do not change a frame that `camera.read()` returns. Copy it first.
-- Pin package versions. Do not upgrade them during the project.
+- `opencv-python-headless` only. The board has no screen: never `cv2.imshow`; save images.
+- Don't modify a frame returned by `camera.read()`; copy it first.
+- Settings go in `config.py`, not hard-coded.
+- Every loop handles a dropped stream and stops cleanly.
+- Pinned package versions; don't upgrade during the project.
+- Nothing added without a current reason; when the reason goes, it goes.
 
-## Next steps
+## 9. Work log
 
-1. `mapping.py`: turn the 21 points into 4 angles plus a gripper value. Add a calibration, a dead-band, a One Euro filter, and two thresholds for the gripper.
-2. Record short test clips of landmarks. Test the mapping on a laptop with no camera.
-3. STM32 sketch: servo control, speed limit, and a safe pose if data stops.
-4. Bridge link from Python to the sketch. Send at most 20 updates per second.
-5. Swap the phone for a USB webcam on a powered USB-C hub.
+| Date | Who | What |
+|---|---|---|
+| Oct 28 | Ved Savjani | Phone as camera: IP Webcam → Wi-Fi → OpenCV, 31 FPS on laptop |
+| Oct 29 | Ved Savjani | UNO Q bring-up (adb, hotspot, Python env), stream 30 FPS on the board; diagnosed MediaPipe 1.2.0 crash (LSE) and 0.10.18 single-core bottleneck (5.8 FPS); 4-thread TFLite benchmark (3×); first custom tracker (palm decoding, rotated crop, tracking), verified with images, ~18 FPS |
+| Oct 30 | Krtin Singhvi | Re-benchmarked independently; refactored the tracker into `hand.py` (`HandTracker`); `camera.py` with reconnect, timeouts, clean shutdown, frame age; `config.py`, `main.py`, check scripts; verified Python 3.13 (single venv) |
+| Oct 31 | Ved Savjani | Merged both into `main`, trimmed to what's required, README |
