@@ -1,5 +1,3 @@
-# Hand tracker (vision/ and most of experiments/). Python 3.12.
-# Same file works on the UNO Q board and on laptops.
 ai-edge-litert==2.3.0
 numpy==2.5.4
 opencv-python-headless==5.0.0.93
