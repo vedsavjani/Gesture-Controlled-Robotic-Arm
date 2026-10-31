@@ -42,6 +42,12 @@ class Camera:
             cap.release()
             self._stop.wait(1.0)                   # pause before retry
 
+    @property
+    def received(self):
+        """Total frames received from the phone so far (to compare with frames processed)."""
+        with self._lock:
+            return self._count
+
     def read(self):
         """Returns (frame, age_in_seconds) for a NEW frame, else (None, 0)."""
         with self._lock:

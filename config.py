@@ -13,6 +13,21 @@ MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
 THREADS = 4
 CAMERA_PORT = 8080           # IP Webcam's default port
 
+# ---------------- Arm (controller.py) ----------------
+# PLACEHOLDERS until the assembled arm is measured: set each servo to 90 deg before fitting its
+# horn, then find each joint's safe min/max and a good home pose, and update these.
+JOINTS = ("base", "shoulder", "elbow")
+HOME = {"base": 90.0, "shoulder": 90.0, "elbow": 90.0}
+LIMITS = {"base": (0.0, 180.0), "shoulder": (0.0, 180.0), "elbow": (0.0, 180.0)}   # (min, max) deg
+GRIPPER_OPEN, GRIPPER_CLOSED = 30.0, 100.0     # deg; claw starts open
+
+# Speed from hand distance (palm size in px, measured Oct 31: far ~75-80, near ~190-250)
+PALM_FAR, PALM_NEAR = 80.0, 200.0              # px
+SPEED_FAST, SPEED_SLOW = 20.0, 3.0             # deg/s at PALM_FAR / PALM_NEAR
+PALM_SMOOTHING = 0.3                           # 0..1, lower = smoother (exponential moving average)
+HOME_SPEED = 30.0                              # deg/s when gliding home on a fist
+STOP_FRAMES = 2                                # frames of a different gesture before a motion stops
+
 
 def _default_gateway():
     """IPv4 default gateway from Linux's routing table (same info as `ip route`), or None."""

@@ -2,7 +2,7 @@
 
 ECE 211P Electronics Lab project, IIIT Bangalore. A 4-DOF robotic arm that copies your hand. A phone camera streams video over Wi-Fi to the **Arduino UNO Q**, the board finds 21 points on your hand in real time, and the arm's servos follow. **No laptop is used at demo time**: the board does all the processing.
 
-**Status (Oct 31):** hand tracking works on the UNO Q: 21 hand points at **~18 FPS** while a hand is in view, verified correct with images. Not built yet: hand → servo angles, smoothing, the Bridge link to the STM32, the servo sketch, the physical arm.
+**Status (Oct 31):** the whole **Linux side is done and tested on the board**: phone camera → hand tracking (~18 FPS) → 9 hand gestures → controller → **4 servo angles** (`base, shoulder, elbow, gripper`), live. **Not done yet:** the Bridge link and the STM32 servo sketch, the assembled arm, and measuring the arm's real angle limits. **Nothing has moved a real servo yet**: the angles are printed, not sent.
 
 ---
 
@@ -12,6 +12,9 @@ ECE 211P Electronics Lab project, IIIT Bangalore. A 4-DOF robotic arm that copie
 1. [How the system works](#1-how-the-system-works)
 2. [Results](#2-results-measured-on-the-uno-q)
 3. [Files](#3-files)
+3a. [Gestures](#3a-gestures)
+3b. [Controller: how the angles are calculated](#3b-controller-how-the-angles-are-calculated)
+3c. [Handoff to the microcontroller](#3c-handoff-to-the-microcontroller-contract-for-the-sketch)
 4. [What you need](#4-what-you-need)
 5. [Setup](#5-setup)
 6. [Run the checks](#6-run-the-checks)
@@ -27,18 +30,18 @@ ECE 211P Electronics Lab project, IIIT Bangalore. A 4-DOF robotic arm that copie
 
 ## 0. Start here
 
-**Done:** phone camera → board stream, and a hand tracker on the board (`hand.py`). **Build on it; don't redo it.** Section 8 explains every design decision and what was tried before.
+**Done (Linux side):** camera → tracker (`hand.py`) → gestures (`gestures.py`) → controller (`controller.py`) → 4 angles, all running together in `main.py`. **Build on it; don't redo it.** Section 8 explains every design decision and what was tried before.
 
-**Open tasks: pick one, tell the group, then start:**
+**Open tasks:**
 
-| # | Task | Needs the board? |
-|---|---|---|
-| 1 | **`mapping.py`**: turn the 21 points into 4 servo angles + a gripper value (calibration, dead zone, One Euro filter, two thresholds for the gripper) | No: develop on a laptop with recorded landmark clips |
-| 2 | **STM32 servo sketch**: move each SG90 gradually toward its target, speed limit, safe pose if data stops | No camera needed; needs the board's MCU side |
-| 3 | **Bridge link**: send the angles from Python (Linux side) to the sketch (MCU side), at most ~20 updates/s | Yes |
-| 4 | **Arm assembly + power**: build the 4-DOF frame, wire the servos with their **own 5 V supply** (4 SG90s through the board can make it reset) | Hardware |
-
-There's only one board, so do task 1 on your laptop first. The tracker runs there unchanged (section 7).
+| # | Task | Who | Needs |
+|---|---|---|---|
+| 1 | **STM32 servo sketch**: receive the 4 angles, move each SG90 gradually toward its target, freeze if data stops (contract in section 3c) | Siddha | Board (MCU side) |
+| 2 | **Bridge link**: fill in `send_to_mcu()` in `main.py` to match the sketch | with task 1 | Board |
+| 3 | **Arm assembly + power**: set every servo to **90° before fitting its horn**; servos on the **5 V 3 A adapter**, not the board's 5 V pin; common ground; ~470–1000 µF capacitor across the servo supply | Hardware | Arm, adapter |
+| 4 | **Measure the real arm**: each joint's safe min/max angle, the home pose, claw open/closed angles → update `config.py` (currently placeholders) | after task 3 | Assembled arm |
+| 5 | **Auto-start on boot**, so the demo needs no laptop to launch `main.py` | anyone | Board |
+| 6 | **Tune on the real arm**: speeds, `STOP_FRAMES`, overshoot | after 1–4 | Everything |
 
 ---
 
@@ -67,8 +70,10 @@ camera.py   background thread; keeps ONLY the newest frame (no lag build-up); re
 hand.py     palm detector (only when no hand is tracked) → rotated crop → landmark model
             → 21 points (x, y in frame pixels; z = rough depth)
    ▼
-mapping.py  points → 4 servo angles + gripper                       (next)
-   │  Bridge                                                         (next)
+gestures.py which fingers are up → one of 9 gestures (+ palm size = hand distance)
+   ▼
+controller.py  gesture + hand distance → 4 angles (base, shoulder, elbow, gripper)
+   │  Bridge, ~20 updates/s: send_to_mcu() in main.py                 (next)
    ▼
 STM32 sketch → PWM → SG90 servos → the arm moves                     (next)
 ```
@@ -112,10 +117,31 @@ Both of us benchmarked independently and got the same numbers. Details: `notes/b
 | `check_hand.py` | `HAND` for open / tilted / far photos (presence 0.88–1.00), `no hand` for the empty photo; points on the real joints. Search path ~110–136 ms, tracking path ~48 ms |
 | `main.py` | ~18 FPS while tracking (hand in 19/19 frames); 8–9 FPS searching when the hand leaves; finds the hand again within ~1 s |
 
-**Known limits (from that run):**
+### Phase 2 tests (Oct 31)
+
+| Test | Result |
+|---|---|
+| End-to-end latency (`latency_test.py`, phone pointed at a millisecond clock) | **~0.7 s** from real hand to tracked result. Board side only ~0.07 s; the other ~0.6 s is the phone (capture, JPEG, IP Webcam buffering) + Wi-Fi |
+| 10-minute run (`soak_test.py`) | Tracking FPS the same at start and end (~18); CPU 57 → ~76 °C, levelling off; no throttling, no crash. **Don't put the board in a closed box** |
+| FPS dips | Caused by the phone/Wi-Fi delivering frames in bursts (visible in `main.py`'s old arrival column), not by the board |
+
+### Gestures and controller (Oct 31)
+
+| Test | Result |
+|---|---|
+| `gesture_test.py`, 14-step sequence incl. look-alike pairs | All 9 gestures read correctly; every switch within ~0.25 s |
+| `main.py` (full pipeline) | Directions correct; speed 20°/s with the hand far → ~3–10°/s near, changing smoothly; stops at limits; claw toggles once per OK sign; fist glides home; no hand = frozen |
+| Palm size (hand distance) | ~75–80 px arm stretched out, ~190–250 px close; gesture detection unaffected by distance |
+
+**Known limits (from these runs):**
 - **Palm should face the camera.** With the hand edge-on (palm sideways, fingers stacked), the hand is still found but finger positions are partly guessed. Design gestures that keep the palm roughly toward the camera.
 - **Points can be outside the frame** (e.g. y = −35) when a fingertip goes past the image edge: the model estimates where it would be. Clamp before mapping to angles.
-- **Tracking drops at frame edges and on fast moves**, then recovers within ~1 s. The mapping should hold the last angles briefly instead of jumping.
+- **Tracking drops at frame edges and on fast moves**, then recovers within ~1 s. The controller holds the angles meanwhile.
+- **Re-finding a hand works best with an open palm.** The palm detector finds ✋ instantly but struggles to spot a ✊ or ☝️ appearing from nowhere. Start with ✋ and keep the hand in view (section 3a).
+- **~0.7 s latency** means the arm keeps moving briefly after you change gesture. Slow down (hand closer) before stopping.
+- **Tested with one person, one room.** Other hands or lighting may need threshold tweaks (`gestures.py`, numbers printed by `gesture_test.py`).
+
+**Not verified yet:** nothing has driven a real servo; limits / home / claw angles in `config.py` are placeholders.
 
 ---
 
@@ -126,7 +152,12 @@ Both of us benchmarked independently and got the same numbers. Details: `notes/b
 | `config.py` | All settings in one place: model folder, thread count, and the camera URL, which is **found automatically** (the phone = the hotspot gateway) or set with the `CAMERA_URL` environment variable |
 | `camera.py` | Reads the phone stream in a background thread. Gives out only **new** frames plus their age. Reconnects if the stream drops (5 s open / 3 s read timeouts). Stops cleanly |
 | `hand.py` | The tracker: `HandTracker().process(frame)` → `(21×3 points, presence)` or `None` |
-| `main.py` | Live loop: camera → tracker → prints FPS, how many frames had a hand, and the index fingertip. Ctrl+C to stop |
+| `gestures.py` | Hand points → gesture name (9 gestures, rule-based) + palm size; `Debouncer` (a gesture counts after 4 stable frames) |
+| `controller.py` | `ArmController.update(gesture, palm_px, time)` → `(base, shoulder, elbow, gripper)` in degrees |
+| `main.py` | **The full program:** camera → tracker → gesture → controller → angles; prints 4 lines/s; `send_to_mcu()` is where the Bridge call goes. Ctrl+C to stop |
+| `gesture_test.py` | Live gesture check: stable + raw gesture, palm size, which fingers are up, raw ratios (for tuning) |
+| `latency_test.py` | End-to-end latency: saves frames stamped with the board's UTC time; compare with a clock in the photo |
+| `soak_test.py` | Long run (default 10 min): FPS, arrival rate, CPU temperature over time |
 | `check_camera.py` | 30-second camera test: FPS, frame size, board-side wait, reconnect |
 | `check_hand.py` | Photo test: runs the full tracker on photos, saves the points drawn (`*_out.jpg`) and what the model saw (`*_crop.jpg`) |
 | `experiments/bench_tflite.py` | Benchmark: each network with 1, 2 and 4 threads. Re-run if threads, models or the board change |
@@ -137,9 +168,84 @@ Both of us benchmarked independently and got the same numbers. Details: `notes/b
 
 How the files depend on each other:
 ```
-main.py ──▶ camera.py ──▶ config.py
-   └─────▶ hand.py ─────▶ config.py
+main.py ──▶ camera.py ─────▶ config.py
+   ├─────▶ hand.py ───────▶ config.py
+   ├─────▶ gestures.py
+   └─────▶ controller.py ─▶ config.py, gestures.py (Debouncer)
 ```
+
+---
+
+## 3a. Gestures
+
+Rule-based, from which fingers are up: a finger is **up** if its tip is farther from the wrist than its middle joint (ratio ≥ 1.1; ring finger ≥ 1.0). The thumb is **out** if its tip is far from the index-finger base relative to palm size. All thresholds are fractions of palm size, so they work near or far, and every rule compares distances (never left/right), so **either hand works**, mirrored or not.
+
+| Gesture | How to show it | Name | Arm |
+|---|---|---|---|
+| ✋ | Open palm, all 5 fingers | `hold` | Nothing moves |
+| ✊ | Fist | `home` | All joints glide back to the home pose while held |
+| 👌 | OK sign: thumb tip on index tip, **middle + ring + pinky up** | `grip` | Claw toggles open/closed, once per OK sign |
+| ☝️ | Number 1: index only | `left` | Base turns one way |
+| ✌️ | Number 2: index + middle | `right` | Base turns the other way |
+| 3 | Number 3: index + middle + ring, pinky folded | `shoulder_up` | Shoulder up |
+| 4 | Number 4: four fingers up, **thumb tucked fully into the palm** | `shoulder_down` | Shoulder down |
+| 👍 | Thumbs up, other fingers in a fist | `elbow_up` | Elbow up |
+| 🤙 | Call me: pinky up (thumb out) | `elbow_down` | Elbow down |
+| | Anything else / no hand | `none` | Nothing moves |
+
+**Usage rules (from testing):**
+1. **Start with ✋** so the board locks onto your hand, then **switch gestures without leaving the frame**.
+2. **Palm toward the camera**; edge-on hands are guessed.
+3. **For 4, tuck the thumb all the way in**; half-tucked flickers with ✋.
+4. **For 3, don't hold the pinky down with the thumb**; it pulls the ring finger down with it.
+5. **Hand far = fast, hand close = slow.** Bring the hand closer before stopping, to reduce overshoot.
+6. ✋ between commands is a good habit: it stops the current motion cleanly.
+
+Why the OK sign needs the other three fingers up: in a fist the thumb also rests on the index finger, so a plain thumb–index distance check fired on fists.
+
+Tuning: run `python gesture_test.py`; if a gesture is misread, the printed ratios show which threshold in `gestures.py` to move. Each threshold's comment lists the values measured on Oct 31.
+
+---
+
+## 3b. Controller: how the angles are calculated
+
+Each joint is a counter that gestures push up or down, every frame:
+```
+new angle = old angle ± speed × dt          dt = time since the last frame (so FPS dips don't change the speed)
+angle     = clamp(angle, joint min, joint max)
+```
+**Speed from hand distance** (palm size, smoothed with an exponential moving average so it doesn't flicker):
+```
+fraction = clamp((palm − 80) / (200 − 80), 0, 1)      0 = far, 1 = near
+speed    = 20 − fraction × (20 − 3)                   20 °/s far … 3 °/s near
+```
+**Rules:**
+- A motion **starts** once its gesture is stable for ~0.2 s (debounce), and **stops** after `STOP_FRAMES` (2) frames of anything else, so a one-frame blip doesn't stutter.
+- Only one joint moves at a time (one gesture at a time).
+- **Claw:** two fixed angles; each new OK sign flips between them.
+- **Home (✊):** every joint steps toward its home angle at `HOME_SPEED` while the fist is held.
+- **No hand / `none` / ✋:** nothing moves. The arm never moves on its own; start-up is at the home pose.
+- **Overshoot:** after you change gesture, the arm keeps moving for the ~0.7 s camera latency: ~14° at full speed, ~2° at the slow speed.
+
+All numbers are in `config.py` (arm block): `HOME`, `LIMITS`, `GRIPPER_OPEN/CLOSED`, `PALM_FAR/NEAR`, `SPEED_FAST/SLOW`, `PALM_SMOOTHING`, `HOME_SPEED`, `STOP_FRAMES`. **Home, limits and claw angles are placeholders** until measured on the assembled arm.
+
+---
+
+## 3c. Handoff to the microcontroller (contract for the sketch)
+
+| Item | Value |
+|---|---|
+| What is sent | 4 numbers: **base, shoulder, elbow, gripper**, in that order, in **degrees** (0–180) |
+| Rate | ~20 updates per second (`SEND_HZ` in `main.py`) |
+| Where in the code | `send_to_mcu(angles)` in `main.py` (currently empty: fill in with the Bridge call) |
+| Sketch's job | Move each servo **gradually** toward its latest target (a few degrees per update, no jumps); generate the PWM |
+| Safety | If nothing arrives for **0.5 s**, freeze where you are |
+| Start-up | Home pose (placeholder 90 / 90 / 90, claw open = 30) |
+| When the hand is lost | Linux side keeps sending the same angles (so the 0.5 s rule doesn't trigger) |
+
+Why angles and not gestures: all decisions (speed, limits, toggle, home) stay in one place, in Python, testable on a laptop; the microcontroller only does what it's best at, smooth precise servo timing. If something goes wrong, the printed numbers show which side is at fault.
+
+**Power for the servos:** 4 SG90s draw well under 1.5 A in normal use and ~2.6–2.8 A worst case (all stalled), so the 5 V 3 A adapter is enough. Power them from the adapter directly (not the board's 5 V pin), connect adapter GND to board GND, add a ~470–1000 µF capacitor across the servo supply, and keep the board on its own USB-C power.
 
 Not in git (in `.gitignore`); every clone makes them itself:
 - `models/`: Google's model files (section 5.5)
@@ -324,18 +430,32 @@ For each photo it runs the tracker twice (the second call uses the crop built fr
 - With adb, on the laptop: `adb pull /home/arduino/gesture-arm/probes`
 - Or serve them from the board: `python -m http.server 8000 --directory probes`, then on a phone/laptop on the **same hotspot** open `http://<BOARD_IP>:8000` (board IP from `hostname -I`, **not** the phone's IP). Ctrl+C to stop.
 
-### 6.3 Live run
+### 6.3 Gesture check
+
+```bash
+python gesture_test.py
+```
+4 lines per second: stable gesture | raw gesture | palm size | fingers up (`TIMRP` = thumb, index, middle, ring, pinky) | raw ratios. Start with ✋, then go through all 9 gestures (~2 s each, hand in view). **Pass:** the first column matches each gesture (section 3a).
+
+### 6.4 Full program
 
 ```bash
 python main.py
 ```
-One line per second. Hold your hand in view, move it, pull it out, bring it back. Stop with Ctrl+C.
 ```
-18.2 FPS | hand in 18/18 frames | index tip 312,201
+ 18.2 FPS | right         | right @ 19.8 deg/s             | base 104.3  shoulder  90.0  elbow  90.0  gripper  30.0
 ```
-**Pass:** ≥15 FPS while your hand is in view; it finds the hand again after you pull it out and back.
+Try: ✋ → ✌️ far (base rises fast) → ✌️ near (slowly) → ✋ (stops) → 👌 (gripper 30 → 100) → ✋ → 👌 (back to 30) → ✊ (glides home). **Stop with Ctrl+C, never Ctrl+Z** (Ctrl+Z only pauses it in the background; clear leftovers with `kill %1`).
 
-### 6.4 Benchmark (optional)
+### 6.5 Latency and long-run tests (optional)
+
+```bash
+python latency_test.py     # point the phone at time.is/UTC with your hand in view; saves probes/latency_1..5.jpg
+python soak_test.py        # 10 minutes; prints FPS and CPU temperature every 10 s, then a summary
+```
+For latency, check `timedatectl` says `System clock synchronized: yes` first; latency = stamped board time − clock time in the photo.
+
+### 6.6 Benchmark (optional)
 
 ```bash
 python experiments/bench_tflite.py
@@ -346,7 +466,7 @@ Times each network with 1, 2 and 4 threads (random input, 5 warm-up + 50 timed r
 
 ## 7. Laptop setup (no board)
 
-For work that doesn't need the board (e.g. `mapping.py`). Tested on Linux; on Windows use **WSL**. Python 3.12 or 3.13.
+For work that doesn't need the board (e.g. tuning `gestures.py` or `controller.py`). Tested on Linux; on Windows use **WSL**. Python 3.12 or 3.13.
 
 ```bash
 # install uv first: https://docs.astral.sh/uv/
@@ -414,6 +534,9 @@ The original experiment scripts (MediaPipe baseline, model inspection, single-ph
 15. **Board clock is UTC** (5:30 behind IST); matters only when reading log timestamps.
 16. **Image rotated 90°** if the phone is held sideways → mount the phone so the image is upright.
 17. **Video settings changed but nothing different** → stop and start the IP Webcam server.
+18. **Ctrl+Z doesn't stop a program**, it pauses it in the background (still holding the camera and memory). Stop with Ctrl+C; clear paused ones with `kill %1 %2 ...`.
+19. **A fist looked like a pinch** (thumb rests on the index finger) → the OK sign requires the other three fingers up.
+20. **Fixed thresholds guessed in advance were wrong** for real hands (fist vs thumbs-up, 3, call me). Measure with `gesture_test.py` and set thresholds in the gap between the measured values.
 
 ---
 
@@ -443,6 +566,13 @@ The original experiment scripts (MediaPipe baseline, model inspection, single-ph
 | Finger points look wrong but a hand is found | Hand is probably edge-on; turn the palm toward the camera |
 | Coordinates negative or bigger than 640×480 | Fingertip is outside the frame; the model extrapolates. Clamp them |
 | `adb: command not found` on the board | `adb` runs on the laptop |
+| A gesture is misread | Run `gesture_test.py`; check `TIMRP` and the ratios; see the usage rules in section 3a |
+| 3 reads as 2 | Ring finger sagging: don't hold the pinky down with the thumb |
+| 4 flickers with `hold` | Tuck the thumb fully into the palm |
+| Long `no hand` after the hand comes back | Show ✋ first so the palm detector re-finds it |
+| Arm keeps moving after you stop | ~0.7 s camera latency; slow down (hand closer) before stopping |
+| Motion pauses briefly mid-gesture | A finger dipped for 2+ frames; raise `STOP_FRAMES` in `config.py` to 3 |
+| Program still running / board slow after Ctrl+Z | Paused copies in the background: `kill %1 %2 %3` |
 
 ---
 
@@ -462,16 +592,16 @@ The original experiment scripts (MediaPipe baseline, model inspection, single-ph
 
 ## 12. Next steps
 
-1. **`record.py`**: record short clips of landmarks (hand left-right, up-down, near-far, pinch) to files, so the mapping can be developed and tested on a laptop with no camera, on the same data every time.
-2. **Decide the mapping** as a team, e.g. wrist x → base, wrist y → shoulder, palm size (wrist → middle-finger base) → elbow (a stand-in for distance), thumb–index pinch → gripper.
-3. **`mapping.py`**: raw mapping → calibration (your hand's range → the servo's range) → dead zone (ignore tiny movements) → One Euro filter (removes jitter without much lag) → gripper with two thresholds (close below one distance, open above a larger one, so it doesn't flicker).
-4. **Define the message to the MCU**: 4 angles in degrees + gripper state, ~20 updates/s max, and what to send when the hand is lost (hold position or a safe pose).
-5. **End-to-end latency test** (hand moves → result printed). `camera.py` already measures the board-side wait (~1 ms); the full delay including the phone and Wi-Fi isn't measured yet.
-6. **STM32 sketch**: servo control with gradual movement (interpolation), a speed limit, a safe pose if data stops.
-7. **Bridge link** from Python to the sketch.
-8. **Auto-start on boot**, so the demo needs no laptop to launch the program.
-9. **Robustness tests**: 10-minute run (memory, overheating, FPS drop), two hands in view, dim light, demo distance.
-10. **Fallback camera**: a USB webcam on a powered USB-C hub, if the phone proves unreliable.
+1. **STM32 sketch** to the contract in section 3c.
+2. **Bridge link**: fill in `send_to_mcu()` in `main.py`.
+3. **Assemble the arm** (servos at 90° before fitting horns), wire power as in section 3c.
+4. **Measure** each joint's safe min/max, the home pose and claw angles → `config.py`.
+5. **First real test**: one joint at a time, low speed, hand on the power plug.
+6. **Tune** speeds, `STOP_FRAMES`, and check the directions match the gestures (flip a sign in `MOVES` in `controller.py` if a joint goes the wrong way).
+7. **Auto-start on boot**, so the demo needs no laptop.
+8. **Robustness**: another person's hand, dim / bright light, demo distance, two hands in view.
+9. **If the lag is a problem:** a USB webcam on a powered USB-C hub removes most of the ~0.6 s phone/Wi-Fi delay.
+10. **Optional:** "rewind on stop" (move back by speed × latency when a motion stops) to cancel overshoot at high speed.
 
 ---
 
@@ -482,4 +612,4 @@ The original experiment scripts (MediaPipe baseline, model inspection, single-ph
 | Oct 28 | Ved Savjani | Phone as camera: IP Webcam → Wi-Fi → OpenCV, 31 FPS on laptop |
 | Oct 29 | Ved Savjani | UNO Q bring-up (adb, udev rule, hotspot, Python env), stream 30 FPS on the board; diagnosed MediaPipe 1.2.0 crash (LSE) and 0.10.18 single-core bottleneck (5.8 FPS); 4-thread TFLite benchmark (3×); first custom tracker (palm decoding, rotated crop, tracking), verified with images, ~18 FPS |
 | Oct 30 | Krtin Singhvi | Re-benchmarked independently; refactored the tracker into `hand.py` (`HandTracker`); `camera.py` with reconnect, timeouts, clean shutdown, frame age; `config.py`, `main.py`, check scripts; verified Python 3.13 with a single venv; setup guide via App Lab |
-| Oct 31 | Ved Savjani | Merged both into `main`, trimmed to what's required; camera URL auto-detection (no hard-coded IP); verified the merged code on the board from a fresh setup; detailed README |
+| Oct 31 | Ved Savjani | Merged both, trimmed to what's required; camera URL auto-detection (no hard-coded IP); verified the merged code on the board from a fresh setup; Phase 2 tests (latency ~0.7 s, 10-min soak, FPS dips traced to Wi-Fi); gesture design (9 discrete gestures, depth-based speed) and `gestures.py` tuned from measured values; `controller.py` and the full pipeline in `main.py` outputting the 4 servo angles; handoff contract for the sketch; detailed README |
