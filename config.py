@@ -16,9 +16,13 @@ CAMERA_PORT = 8080           # IP Webcam's default port
 # ---------------- Arm (controller.py) ----------------
 # PLACEHOLDERS until the assembled arm is measured: set each servo to 90 deg before fitting its
 # horn, then find each joint's safe min/max and a good home pose, and update these.
+# LIMITS must match MIN_A / MAX_A in sketch/sketch.ino (the sketch clamps again as a safety net).
+# CHANGED Nov 1: LIMITS were 0..180 for every joint; now 20..160 so that an untested arm can't be
+# driven into its mechanical stops. These are still interim values. When the real arm is measured
+# (README task 4), update LIMITS, HOME and GRIPPER_* here AND MIN_A / MAX_A / HOME_A in the sketch.
 JOINTS = ("base", "shoulder", "elbow")
 HOME = {"base": 90.0, "shoulder": 90.0, "elbow": 90.0}
-LIMITS = {"base": (0.0, 180.0), "shoulder": (0.0, 180.0), "elbow": (0.0, 180.0)}   # (min, max) deg
+LIMITS = {"base": (20.0, 160.0), "shoulder": (20.0, 160.0), "elbow": (20.0, 160.0)}   # (min, max) deg
 GRIPPER_OPEN, GRIPPER_CLOSED = 30.0, 100.0     # deg; claw starts open
 
 # Speed from hand distance (palm size in px, measured Oct 31: far ~75-80, near ~190-250)
@@ -27,6 +31,12 @@ SPEED_FAST, SPEED_SLOW = 20.0, 3.0             # deg/s at PALM_FAR / PALM_NEAR
 PALM_SMOOTHING = 0.3                           # 0..1, lower = smoother (exponential moving average)
 HOME_SPEED = 30.0                              # deg/s when gliding home on a fist
 STOP_FRAMES = 2                                # frames of a different gesture before a motion stops
+
+# ---------------- Microcontroller link (main.py -> sketch/sketch.ino) ----------------
+# ADDED Nov 1. Name of the Bridge method the sketch registers: Bridge.provide("set_angles", ...).
+# It takes 4 integers in this order: base, shoulder, elbow, gripper (degrees).
+# The name must be identical in sketch/sketch.ino and here; main.py's send_to_mcu() uses this value.
+MCU_METHOD = "set_angles"
 
 
 def _default_gateway():
