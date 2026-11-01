@@ -2,7 +2,7 @@
 
 ECE 211P Electronics Lab project, IIIT Bangalore. A 4-DOF robotic arm that copies your hand. A phone camera streams video over Wi-Fi to the **Arduino UNO Q**, the board finds 21 points on your hand in real time, and the arm's servos follow. **No laptop is used at demo time**: the board does all the processing.
 
-**Status (Oct 31):** the whole **Linux side is done and tested on the board**: phone camera → hand tracking (~18 FPS) → 9 hand gestures → controller → **4 servo angles** (`base, shoulder, elbow, gripper`), live. **Not done yet:** the Bridge link and the STM32 servo sketch, the assembled arm, and measuring the arm's real angle limits. **Nothing has moved a real servo yet**: the angles are printed, not sent.
+**Status (Oct 31):** the whole **Linux side is done and tested on the board**: phone camera → hand tracking (~18 FPS) → 9 hand gestures → controller → **4 servo angles** (`base, shoulder, elbow, gripper`), live. **Written Nov 1 but not yet tested on the board:** the Bridge link (`send_to_mcu()` in `main.py`) and the STM32 servo sketch (`sketch/sketch.ino`). **Not done yet:** the assembled arm, and measuring the arm's real angle limits. **Nothing has moved a real servo yet.**
 
 ---
 
@@ -36,8 +36,8 @@ ECE 211P Electronics Lab project, IIIT Bangalore. A 4-DOF robotic arm that copie
 
 | # | Task | Who | Needs |
 |---|---|---|---|
-| 1 | **STM32 servo sketch**: receive the 4 angles, move each SG90 gradually toward its target, freeze if data stops (contract in section 3c) | Siddha | Board (MCU side) |
-| 2 | **Bridge link**: fill in `send_to_mcu()` in `main.py` to match the sketch | with task 1 | Board |
+| 1 | **STM32 servo sketch**: receive the 4 angles, move each SG90 gradually toward its target, freeze if data stops (contract in section 3c). Written Nov 1 in `sketch/sketch.ino`, not yet tested on the board | Siddha | Board (MCU side) |
+| 2 | **Bridge link**: fill in `send_to_mcu()` in `main.py` to match the sketch. Written Nov 1, not yet tested on the board (whether the Bridge library can be imported from the `uv` venv is unverified) | with task 1 | Board |
 | 3 | **Arm assembly + power**: set every servo to **90° before fitting its horn**; servos on the **5 V 3 A adapter**, not the board's 5 V pin; common ground; ~470–1000 µF capacitor across the servo supply | Hardware | Arm, adapter |
 | 4 | **Measure the real arm**: each joint's safe min/max angle, the home pose, claw open/closed angles → update `config.py` (currently placeholders) | after task 3 | Assembled arm |
 | 5 | **Auto-start on boot**, so the demo needs no laptop to launch `main.py` | anyone | Board |
@@ -73,9 +73,9 @@ hand.py     palm detector (only when no hand is tracked) → rotated crop → la
 gestures.py which fingers are up → one of 9 gestures (+ palm size = hand distance)
    ▼
 controller.py  gesture + hand distance → 4 angles (base, shoulder, elbow, gripper)
-   │  Bridge, ~20 updates/s: send_to_mcu() in main.py                 (next)
+   │  Bridge, ~20 updates/s: send_to_mcu() in main.py                 (written, untested)
    ▼
-STM32 sketch → PWM → SG90 servos → the arm moves                     (next)
+STM32 sketch → PWM → SG90 servos → the arm moves                     (written, untested)
 ```
 
 ### The tracker (`hand.py`)
@@ -149,12 +149,13 @@ Both of us benchmarked independently and got the same numbers. Details: `notes/b
 
 | File | Job |
 |---|---|
-| `config.py` | All settings in one place: model folder, thread count, and the camera URL, which is **found automatically** (the phone = the hotspot gateway) or set with the `CAMERA_URL` environment variable |
+| `config.py` | All settings in one place: model folder, thread count, and the camera URL, which is **found automatically** (the phone = the hotspot gateway) or set with the `CAMERA_URL` environment variable. Also `MCU_METHOD`, the Bridge method name shared with the sketch |
 | `camera.py` | Reads the phone stream in a background thread. Gives out only **new** frames plus their age. Reconnects if the stream drops (5 s open / 3 s read timeouts). Stops cleanly |
 | `hand.py` | The tracker: `HandTracker().process(frame)` → `(21×3 points, presence)` or `None` |
 | `gestures.py` | Hand points → gesture name (9 gestures, rule-based) + palm size; `Debouncer` (a gesture counts after 4 stable frames) |
 | `controller.py` | `ArmController.update(gesture, palm_px, time)` → `(base, shoulder, elbow, gripper)` in degrees |
-| `main.py` | **The full program:** camera → tracker → gesture → controller → angles; prints 4 lines/s; `send_to_mcu()` is where the Bridge call goes. Ctrl+C to stop |
+| `main.py` | **The full program:** camera → tracker → gesture → controller → angles; prints 4 lines/s; `send_to_mcu()` sends the 4 angles to the sketch over the Bridge (`config.MCU_METHOD`). Ctrl+C to stop |
+| `sketch/sketch.ino` | STM32 servo sketch (Nov 1): receives the 4 angles over the Bridge (method `set_angles`), clamps them to safe limits, moves each servo gradually, freezes if nothing arrives for 0.5 s. Compiling it needs the Arduino Q Boards package and the `Arduino_RouterBridge` and `Servo` (1.3.0 or newer) libraries. Not yet tested on the board |
 | `gesture_test.py` | Live gesture check: stable + raw gesture, palm size, which fingers are up, raw ratios (for tuning) |
 | `latency_test.py` | End-to-end latency: saves frames stamped with the board's UTC time; compare with a clock in the photo |
 | `soak_test.py` | Long run (default 10 min): FPS, arrival rate, CPU temperature over time |
@@ -236,8 +237,8 @@ All numbers are in `config.py` (arm block): `HOME`, `LIMITS`, `GRIPPER_OPEN/CLOS
 | Item | Value |
 |---|---|
 | What is sent | 4 numbers: **base, shoulder, elbow, gripper**, in that order, in **degrees** (0–180) |
-| Rate | ~20 updates per second (`SEND_HZ` in `main.py`) |
-| Where in the code | `send_to_mcu(angles)` in `main.py` (currently empty: fill in with the Bridge call) |
+| Rate | ~20 updates per second, sent even when the angles don't change, because the sketch freezes the arm if nothing arrives for 0.5 s (`SEND_HZ` in `main.py`) |
+| Where in the code | `send_to_mcu(angles)` in `main.py` (calls `Bridge.call(config.MCU_METHOD, base, shoulder, elbow, gripper)` with 4 integers; the sketch registers `set_angles`) |
 | Sketch's job | Move each servo **gradually** toward its latest target (a few degrees per update, no jumps); generate the PWM |
 | Safety | If nothing arrives for **0.5 s**, freeze where you are |
 | Start-up | Home pose (placeholder 90 / 90 / 90, claw open = 30) |
