@@ -12,3 +12,5 @@ models/
 # Large / throwaway local files
 proof.mp4
 snapshot_*.jpg
+
+*.patch
