@@ -2,24 +2,13 @@
 
 Prints 4 lines per second:
   FPS | stable gesture | moving joint + speed | base shoulder elbow gripper (deg)
-send_to_mcu() sends the angles to sketch/sketch.ino over the Bridge, ~20 times per second.
+A dedicated sender thread sends the latest angles to sketch/sketch.ino over the Bridge at
+config.MCU_SEND_HZ (20 Hz) without blocking the vision loop. If the vision loop stalls for
+longer than config.MCU_STALE_SEC, sending pauses so the STM32 watchdog freezes the arm.
 If the Bridge library can't be imported (e.g. on a laptop), the angles are only printed.
 Stop with Ctrl+C.
-
-CHANGES on Nov 1 (README task 2, the Bridge link; everything else in this file is unchanged):
-  - send_to_mcu() was an empty `pass`. It now calls
-        Bridge.call(config.MCU_METHOD, base, shoulder, elbow, gripper)
-    with 4 integers, matching the contract at the top of sketch/sketch.ino.
-  - The Bridge import is wrapped in try/except, so this file still runs on a laptop (it just prints).
-  - A failed Bridge call prints an error (first one, then every 100th) and does NOT stop the vision loop.
-  - SEND_HZ stays 20 and must keep sending even when the angles don't change: the sketch freezes the
-    arm if nothing arrives for 0.5 s.
-
-NOT VERIFIED YET: nobody has tested that `from arduino.app_utils import Bridge` works from the README's
-uv venv, or that the call reaches the sketch. If main.py prints "Bridge not available here", the import
-failed. In the Arduino examples I found, Python runs inside App Lab (App.run(user_loop=...)); if the
-plain script can't reach the Bridge, this program may need to run that way. Test this first on the board.
 """
+import threading
 import time
 
 import config
@@ -29,64 +18,102 @@ from gestures import classify
 from hand import HandTracker
 
 try:
-    from arduino.app_utils import Bridge       # Arduino's Linux<->STM32 link (UNO Q only)
+    from arduino.app_utils import Bridge     # Arduino's Linux<->STM32 link (UNO Q only)
 except ImportError:
     Bridge = None
     print("Bridge not available here: angles are printed but NOT sent to the arm.")
 
-SEND_HZ = 20                    # updates per second to the microcontroller. Keep sending even when the
-                                # angles don't change: the sketch freezes the arm if nothing arrives for 0.5 s.
-_mcu_errors = 0
+
+class McuSender:
+    """Sends (base, shoulder, elbow, gripper) to the STM32 at a steady rate on a background thread."""
+
+    def __init__(self, hz=config.MCU_SEND_HZ, stale_sec=config.MCU_STALE_SEC):
+        self._period = 1.0 / hz
+        self._stale_sec = stale_sec
+        self._lock = threading.Lock()
+        self._angles = None
+        self._updated_at = 0.0
+        self._errors = 0
+        self._stop = threading.Event()
+        self._thread = None
+        if Bridge is not None:
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def update(self, angles, now):
+        with self._lock:
+            self._angles = tuple(int(round(a)) for a in angles)
+            self._updated_at = now
+
+    def _run(self):
+        next_t = time.monotonic()
+        while not self._stop.is_set():
+            with self._lock:
+                angles = self._angles
+                updated_at = self._updated_at
+            now = time.monotonic()
+            if angles is not None and (now - updated_at) <= self._stale_sec:
+                try:
+                    Bridge.call(config.MCU_METHOD, *angles)
+                except Exception as exc:      # never let a link problem stop the vision loop
+                    self._errors += 1
+                    if self._errors == 1 or self._errors % 100 == 0:
+                        print(f"Bridge call failed ({self._errors} so far): {exc!r}")
+            next_t += self._period
+            delay = next_t - time.monotonic()
+            if delay > 0:
+                self._stop.wait(delay)
+            else:
+                next_t = time.monotonic()
+
+    def stop(self):
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
 
 
-def send_to_mcu(angles):
-    """Send (base, shoulder, elbow, gripper) to the STM32 sketch over the Bridge.
-    The sketch registers config.MCU_METHOD and takes 4 integers (degrees)."""
-    global _mcu_errors
-    if Bridge is None:
-        return
-    base, shoulder, elbow, gripper = (int(round(a)) for a in angles)
+def main():
+    cam = Camera()
+    tracker = HandTracker()
+    arm = ArmController()
+    sender = McuSender()
+    last_print = time.monotonic()
+    frames = 0
+
     try:
-        Bridge.call(config.MCU_METHOD, base, shoulder, elbow, gripper)
-    except Exception as exc:                   # never let a link problem stop the vision loop
-        _mcu_errors += 1
-        if _mcu_errors == 1 or _mcu_errors % 100 == 0:
-            print(f"Bridge call failed ({_mcu_errors} so far): {exc!r}")
+        while True:
+            frame, _ = cam.read(timeout=0.05)
+            if frame is None:
+                continue
+            res = tracker.process(frame)
+            if res is None:
+                gesture, palm_frac = "none", None
+            else:
+                gesture, _, m = classify(res[0], frame_h=frame.shape[0])
+                palm_frac = m["palm_frac"]
+            now = time.monotonic()
+            angles = arm.update(gesture, palm_frac, now)
+            sender.update(angles, now)
+            frames += 1
+
+            if now - last_print >= 0.25:
+                fps = frames / (now - last_print)
+                if arm.active == "home":
+                    moving = f"home glide @ {arm.speed:4.1f} deg/s"
+                elif arm.active:
+                    moving = f"{arm.active} @ {arm.speed:4.1f} deg/s"
+                else:
+                    moving = "-"
+                b, s, e, g = angles
+                print(f"{fps:5.1f} FPS | {arm.stable:13s} | {moving:30s} | "
+                      f"base {b:5.1f}  shoulder {s:5.1f}  elbow {e:5.1f}  gripper {g:5.1f}")
+                frames, last_print = 0, now
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sender.stop()
+        cam.stop()
 
 
-cam = Camera()
-tracker = HandTracker()
-arm = ArmController()
-last_print = last_send = time.time()
-frames = 0
-try:
-    while True:
-        frame, _ = cam.read()
-        if frame is None:
-            time.sleep(0.002)
-            continue
-        res = tracker.process(frame)
-        if res is None:
-            gesture, palm = "none", None
-        else:
-            gesture, _, m = classify(res[0])
-            palm = m["palm_px"]
-        now = time.time()
-        angles = arm.update(gesture, palm, now)
-        frames += 1
-
-        if now - last_send >= 1.0 / SEND_HZ:
-            send_to_mcu(angles)
-            last_send = now
-
-        if now - last_print >= 0.25:
-            fps = frames / (now - last_print)
-            moving = f"{arm.active} @ {arm.speed:4.1f} deg/s" if arm.active else ("home glide" if arm.speed else "-")
-            b, s, e, g = angles
-            print(f"{fps:5.1f} FPS | {arm._stable_prev:13s} | {moving:30s} | "
-                  f"base {b:5.1f}  shoulder {s:5.1f}  elbow {e:5.1f}  gripper {g:5.1f}")
-            frames, last_print = 0, now
-except KeyboardInterrupt:
-    pass
-finally:
-    cam.stop()
+if __name__ == "__main__":
+    main()

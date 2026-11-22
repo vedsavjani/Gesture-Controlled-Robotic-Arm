@@ -14,7 +14,10 @@ Gestures:
   elbow_down     "call me": pinky up (thumb out)  elbow down
   none           anything else / unclear
 """
-import numpy as np
+import math
+import time
+
+import config
 
 # Landmark indices (0 = wrist). Each finger: base joint (MCP), middle joint (PIP), tip.
 WRIST = 0
@@ -39,10 +42,10 @@ PINCH = 0.35              # pinch if thumb tip and index tip are <= 0.35 palm si
 
 
 def _dist(pts, a, b):
-    return float(np.linalg.norm(pts[a, :2] - pts[b, :2]))
+    return math.hypot(float(pts[a, 0] - pts[b, 0]), float(pts[a, 1] - pts[b, 1]))
 
 
-def finger_states(pts):
+def finger_states(pts, frame_h=None):
     """Returns (states, measures).
     states: dict thumb/index/middle/ring/pinky -> True if up.
     measures: the raw ratios behind the decision (printed by gesture_test.py, for tuning)."""
@@ -57,13 +60,15 @@ def finger_states(pts):
     states["thumb"] = thumb >= (THUMB_OUT_OPEN if fingers_up >= 3 else THUMB_OUT_CLOSED)
     measures["thumb"] = thumb
     measures["pinch"] = _dist(pts, THUMB_TIP, FINGERS["index"][1]) / palm
-    measures["palm_px"] = palm          # palm size in pixels: bigger = hand closer (used for speed)
+    measures["palm_px"] = palm          # palm size in pixels: bigger = hand closer
+    if frame_h is not None and frame_h > 0:
+        measures["palm_frac"] = palm / float(frame_h)
     return states, measures
 
 
-def classify(pts):
+def classify(pts, frame_h=None):
     """21x3 points -> (gesture name, states, measures)."""
-    s, m = finger_states(pts)
+    s, m = finger_states(pts, frame_h=frame_h)
     four = (s["index"], s["middle"], s["ring"], s["pinky"])
 
     # Pinch only counts as the OK sign (middle, ring, pinky up): in a fist the thumb
@@ -88,23 +93,31 @@ def classify(pts):
 
 
 class Debouncer:
-    """A gesture only counts once it has been seen for `frames` frames in a row
-    (~0.2 s at 18 FPS), so passing through '1' on the way to '2' doesn't fire 'left'."""
+    """Time-based debouncer: a gesture only becomes stable after being held continuously
+    for `hold_s` seconds (default 0.2 s), independent of FPS.
 
-    def __init__(self, frames=4):
-        self.frames = frames
+    If a non-matching gesture persists without stabilizing, call reset() or let
+    `clear_after_frames` clear stale state so flickering never traps an old command."""
+
+    def __init__(self, hold_s=None):
+        self.hold_s = config.DEBOUNCE_SEC if hold_s is None else float(hold_s)
         self.stable = "none"
-        self._candidate, self._count = "none", 0
+        self._candidate = "none"
+        self._since = None
 
-    def update(self, gesture):
-        if gesture == self._candidate:
-            self._count += 1
-        else:
-            self._candidate, self._count = gesture, 1
-        if self._count >= self.frames:
+    def update(self, gesture, now=None):
+        if now is None:
+            now = time.monotonic()
+        if gesture != self._candidate:
+            self._candidate = gesture
+            self._since = now
+        elif self._since is None:
+            self._since = now
+        if now - self._since >= self.hold_s:
             self.stable = self._candidate
         return self.stable
 
     def reset(self):
         self.stable = "none"
-        self._candidate, self._count = "none", 0
+        self._candidate = "none"
+        self._since = None

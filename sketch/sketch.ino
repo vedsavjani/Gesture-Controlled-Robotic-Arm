@@ -44,29 +44,38 @@ const unsigned long TICK_MS    = 20;    // servo update period: 50 per second
 const unsigned long TIMEOUT_MS = 500;   // freeze if no command for this long
 
 Servo servos[N];
-volatile int target[N];            // written by the Bridge handler, read by loop()
-volatile unsigned long lastRx = 0; // time of the last command
-volatile bool gotData = false;     // true after the first command (so the arm does not "time out" at power-up)
+volatile int target[N];            // written ONLY by setAngles(), snapshotted in loop()
+volatile unsigned long lastRx = 0; // millis() timestamp of the last command
+volatile bool gotData = false;     // true after the first command (avoids timing out at power-up)
 int current[N];                    // where each servo is now
 unsigned long lastTick = 0;
 
 // Called from Python: Bridge.call("set_angles", base, shoulder, elbow, gripper)
 void setAngles(int base, int shoulder, int elbow, int gripper) {
   const int in[N] = {base, shoulder, elbow, gripper};
+  int clamped[N];
   for (int i = 0; i < N; i++) {
-    target[i] = constrain(in[i], MIN_A[i], MAX_A[i]);   // safety clamp, even if Python sends garbage
+    clamped[i] = constrain(in[i], MIN_A[i], MAX_A[i]);  // safety clamp, even if Python sends garbage
   }
-  lastRx = millis();
+  unsigned long rxNow = millis();
+  noInterrupts();
+  for (int i = 0; i < N; i++) {
+    target[i] = clamped[i];
+  }
+  lastRx = rxNow;
   gotData = true;
+  interrupts();
 }
 
 void setup() {
   for (int i = 0; i < N; i++) {
     target[i] = HOME_A[i];
     current[i] = HOME_A[i];
-    servos[i].attach(PINS[i], PULSE_MIN_US, PULSE_MAX_US);
+    // Pre-load HOME_A BEFORE attach() so servos don't twitch to 90 deg at power-on
     servos[i].write(HOME_A[i]);
+    servos[i].attach(PINS[i], PULSE_MIN_US, PULSE_MAX_US);
   }
+  lastTick = millis();
   Bridge.begin();
   Bridge.provide("set_angles", setAngles);   // if calls do not arrive, try Bridge.provide_safe(...)
 }
@@ -74,24 +83,35 @@ void setup() {
 void loop() {
   unsigned long now = millis();
   if (now - lastTick < TICK_MS) return;
-  lastTick = now;
+  lastTick += TICK_MS;
+  if (now - lastTick >= TICK_MS) lastTick = now;  // resync if delayed
 
+  int localTarget[N];
 #if SWEEP_TEST
   // 8 phases of 1.5 s: joint 0 up, joint 0 down, joint 1 up, ... joint 3 up, joint 3 down
   int phase = (now / 1500) % 8;
   int j = phase / 2;
-  for (int i = 0; i < N; i++) target[i] = HOME_A[i];
-  target[j] = constrain(HOME_A[j] + ((phase % 2) ? -15 : 15), MIN_A[j], MAX_A[j]);
+  for (int i = 0; i < N; i++) localTarget[i] = HOME_A[i];
+  localTarget[j] = constrain(HOME_A[j] + ((phase % 2) ? -15 : 15), MIN_A[j], MAX_A[j]);
 #else
-  // Watchdog: commands were arriving and then stopped -> hold position
-  if (gotData && (now - lastRx > TIMEOUT_MS)) {
-    for (int i = 0; i < N; i++) target[i] = current[i];
+  unsigned long rxTime;
+  bool hasData;
+  noInterrupts();
+  for (int i = 0; i < N; i++) localTarget[i] = target[i];
+  rxTime = lastRx;
+  hasData = gotData;
+  interrupts();
+
+  // Watchdog: commands were arriving and then stopped -> freeze where we are (no mutation of target[])
+  // Guard (now >= rxTime) prevents unsigned underflow if setAngles() ran after `now = millis()`.
+  if (hasData && now >= rxTime && (now - rxTime > TIMEOUT_MS)) {
+    return;
   }
 #endif
 
   // Move each servo toward its target by at most STEP_A[i] degrees
   for (int i = 0; i < N; i++) {
-    int diff = target[i] - current[i];
+    int diff = localTarget[i] - current[i];
     if (diff == 0) continue;
     current[i] += constrain(diff, -STEP_A[i], STEP_A[i]);
     servos[i].write(current[i]);
