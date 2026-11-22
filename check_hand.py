@@ -29,7 +29,7 @@ for path in sys.argv[1:]:
             print(f"{path} call {call}: no hand ({ms:.0f} ms)")
         else:
             p, presence = res
-            print(f"{path} call {call}: HAND presence {presence:.2f} raw {tracker.last_raw_presence:.2f} "
+            print(f"{path} call {call}: HAND presence {presence:.2f} "
                   f"| wrist ({p[0,0]:.0f},{p[0,1]:.0f}) index tip ({p[8,0]:.0f},{p[8,1]:.0f}) ({ms:.0f} ms)")
     if first is not None:
         pts = first[0]

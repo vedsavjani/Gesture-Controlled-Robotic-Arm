@@ -11,8 +11,8 @@ import config
 
 
 class Camera:
-    def __init__(self, url=config.CAMERA_URL):
-        self.url = url
+    def __init__(self, url=None):
+        self.url = url or config.camera_url()
         self._frame = None
         self._stamp = 0.0      # time the newest frame arrived
         self._count = 0        # frames received
@@ -41,6 +41,12 @@ class Camera:
                         self._count += 1
             cap.release()
             self._stop.wait(1.0)                   # pause before retry
+
+    @property
+    def received(self):
+        """Total frames received from the phone so far (to compare with frames processed)."""
+        with self._lock:
+            return self._count
 
     def read(self):
         """Returns (frame, age_in_seconds) for a NEW frame, else (None, 0)."""

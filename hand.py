@@ -108,7 +108,6 @@ class HandTracker:
 
         self._roi = None
         self.last_crop = None          # RGB crop the landmark model saw (for debugging)
-        self.last_raw_presence = 0.0
 
     def reset(self):
         self._roi = None
@@ -164,9 +163,7 @@ class HandTracker:
         self._lm.set_tensor(self._lm_in, (crop.astype(np.float32) / 255.0)[np.newaxis])
         self._lm.invoke()
         pts = self._lm.get_tensor(self._lm_points)[0].reshape(21, 3)    # crop pixels
-        raw = float(self._lm.get_tensor(self._lm_presence)[0, 0])
-        self.last_raw_presence = raw
-        presence = raw if 0.0 <= raw <= 1.0 else float(_sigmoid(raw))
+        presence = float(self._lm.get_tensor(self._lm_presence)[0, 0])   # already 0..1
         inv = cv2.invertAffineTransform(m)
         xy = np.hstack([pts[:, :2], np.ones((21, 1))]) @ inv.T          # back to frame
         return np.hstack([xy, pts[:, 2:3]]), presence
