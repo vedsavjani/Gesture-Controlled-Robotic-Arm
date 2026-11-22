@@ -11,11 +11,6 @@ models/
 
 # Large / throwaway local files
 proof.mp4
-<<<<<<< HEAD
 snapshot_*.jpg
-
-*.patch
-=======
-snapshot_*.jpgprobes/
 probes/
->>>>>>> siddha
+*.patch
