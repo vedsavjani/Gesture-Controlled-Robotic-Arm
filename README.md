@@ -140,7 +140,6 @@ notes/        Benchmark results
 3. **Arduino App Lab:** create an app with `python/` and `sketch/`, add the **Servo** library, and press **Run**.
 4. Power the servos, show ✋ to the camera, and start gesturing.
 
-Full setup, design decisions, tests and troubleshooting: [docs/DEVELOPER_NOTES.md](docs/DEVELOPER_NOTES.md).
 
 ## License
 
