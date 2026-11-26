@@ -24,7 +24,8 @@ ECE 211P Electronics Lab project, IIIT Bangalore. A 4-DOF robotic arm that copie
 10. [Troubleshooting](#10-troubleshooting)
 11. [Rules for the code](#11-rules-for-the-code)
 12. [Next steps](#12-next-steps)
-13. [Work log](#13-work-log)
+13. [Recent fixes and hardware integration summary](#13-recent-fixes-and-hardware-integration-summary)
+14. [Work log](#14-work-log)
 
 ---
 
@@ -606,7 +607,14 @@ The original experiment scripts (MediaPipe baseline, model inspection, single-ph
 
 ---
 
-## 13. Work log
+## 13. Recent fixes and hardware integration summary
+
+- **Controller & gesture fixes (`controller.py`, `gestures.py`):** Fixed the stop-then-lurch / creep bug (debouncer now resets on `STOP_FRAMES`, motion only starts when `gesture == stable`, and `home` also stops in `STOP_FRAMES`), guarded the `grip` toggle against brief tracking drops (requires a non-`"none"` gesture + 1 s cooldown), made debouncing and EMA smoothing `dt`-based, normalized palm speed by frame height, and replaced `np.linalg.norm` with `math.hypot`.
+- **Timing, camera & vision optimizations (`camera.py`, `hand.py`, `config.py`, `main.py`):** Replaced `time.time()` with `time.monotonic()` (with `dt >= 0` clamping); added low-latency FFmpeg options (`nobuffer`/`low_delay`), `CAP_PROP_BUFFERSIZE = 1`, and `threading.Condition` in `camera.read(timeout=...)`; optimized `hand.py` to crop/resize BGR before RGB conversion, compare raw palm logits directly (removing `_sigmoid`), and reuse pre-allocated float32 buffers; fixed `.gitignore` and helper scripts.
+- **STM32 firmware & Bridge jitter reduction (`sketch/sketch.ino`, `python/main.py`):** Pre-loaded `HOME_A` before `Servo::attach()` to eliminate power-on jerk, switched to `Bridge.provide_safe` + `writeMicroseconds()`, and moved 50 Hz velocity integration with soft acceleration/braking (`ACCEL_PER_TICK`) onto the STM32 (`set_cmd`). Python now sends one-way `Bridge.notify()` commands only on state/speed changes (0 Hz at `hold`, ~1 Hz safety keepalive while moving, 1 message per gripper toggle) instead of streaming 20 angles/s, eliminating Bridge-induced servo jitter.
+- **Real hardware & App Lab deployment:** Verified live on the assembled arm (3× MG996R for base/shoulder/elbow + 1× MG90 gripper on a 5 V 10 A external supply; calibrated `MIN_A = {0, 5, 5, 0}`, `MAX_A = {180, 90, 90, 130}`, `HOME_A = {90, 90, 90, 30}`). Deployed inside Arduino App Lab (`python/` layout with `models/` inside `python/` and only `ai-edge-litert` in `python/requirements.txt` to avoid the container's pre-installed OpenCV version conflict).
+
+## 14. Work log
 
 | Date | Who | What |
 |---|---|---|
